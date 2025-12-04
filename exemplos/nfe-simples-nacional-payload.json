@@ -1,0 +1,92 @@
+{
+  "naturezaOperacao": "Venda de Mercadoria",
+  "serie": 1,
+  "numero": 1,
+  "tpNF": "1",
+  "idDest": "1",
+  "tpAmb": "2",
+  "finNFe": "1",
+  "indFinal": "0",
+  "indPres": "1",
+  "emitente": {
+    "CNPJ": "31749424000187",
+    "xNome": "GABI MODAS  GABRIELA KRAUSS LTDA",
+    "xFant": "GABI MODAS CANOINHAS ",
+    "endereco": {
+      "xLgr": "RUA FRANCISCO DE PAULA PEREIRA",
+      "nro": "908",
+      "xBairro": "CENTRO",
+      "cMun": "4203808",
+      "xMun": "CANOINHAS",
+      "UF": "SC",
+      "CEP": "89460048",
+      "cPais": "1058",
+      "xPais": "BRASIL",
+      "fone": "1133334444"
+    },
+    "IE": "258858680",
+    "CRT": "1"
+  },
+  "destinatario": {
+    "CNPJ": "40818046000137",
+    "xNome": "DOTERP SISTEMAS LTDA",
+    "endereco": {
+      "xLgr": "RUA AMAPA",
+      "nro": "34",
+      "xBairro": "BELA VISTA",
+      "cMun": "4219705",
+      "xMun": "XAXIM",
+      "UF": "SC",
+      "CEP": "89825000",
+      "cPais": "1058",
+      "xPais": "BRASIL"
+    },
+    "indIEDest": "1",
+    "IE": "260914053",
+    "email": "jrdiasx@gmail.com"
+  },
+  "produtos": [
+    {
+      "cProd": "001",
+      "cEAN": "SEM GTIN",
+      "xProd": "PRODUTO TESTE",
+      "NCM": "84713012",
+      "CFOP": "5102",
+      "uCom": "UN",
+      "qCom": 1,
+      "vUnCom": 100,
+      "vProd": 100,
+      "cEANTrib": "SEM GTIN",
+      "uTrib": "UN",
+      "qTrib": 1,
+      "vUnTrib": 100,
+      "indTot": "1",
+      "imposto": {
+        "ICMS": {
+          "orig": "0",
+          "CSOSN": "102"
+        },
+        "PIS": {
+          "CST": "99",
+          "vPIS": 0
+        },
+        "COFINS": {
+          "CST": "99",
+          "vCOFINS": 0
+        }
+      }
+    }
+  ],
+  "transporte": {
+    "modFrete": "9"
+  },
+  "pagamentos": [
+    {
+      "indPag": "0",
+      "tPag": "01",
+      "vPag": 100
+    }
+  ],
+  "infCpl": "Nota Fiscal de Teste - Homologacao - Gerada via API NestJS - Simples Nacional"
+}
+

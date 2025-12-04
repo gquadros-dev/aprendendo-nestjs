@@ -1,0 +1,100 @@
+{
+  "naturezaOperacao": "Venda de Mercadoria",
+  "serie": 1,
+  "numero": 1,
+  "tpNF": "1",
+  "idDest": "1",
+  "tpAmb": "2",
+  "finNFe": "1",
+  "indFinal": "0",
+  "indPres": "1",
+  "emitente": {
+    "CNPJ": "31749424000187",
+    "xNome": "EMPRESA TESTE LTDA",
+    "xFant": "EMPRESA TESTE",
+    "endereco": {
+      "xLgr": "RUA TESTE",
+      "nro": "123",
+      "xBairro": "CENTRO",
+      "cMun": "3550308",
+      "xMun": "SAO PAULO",
+      "UF": "SP",
+      "CEP": "01000000",
+      "cPais": "1058",
+      "xPais": "BRASIL",
+      "fone": "1133334444"
+    },
+    "IE": "123456789012",
+    "CRT": "3"
+  },
+  "destinatario": {
+    "CNPJ": "98765432000100",
+    "xNome": "CLIENTE TESTE LTDA",
+    "endereco": {
+      "xLgr": "AV TESTE",
+      "nro": "456",
+      "xBairro": "JARDIM TESTE",
+      "cMun": "3550308",
+      "xMun": "SAO PAULO",
+      "UF": "SP",
+      "CEP": "02000000",
+      "cPais": "1058",
+      "xPais": "BRASIL"
+    },
+    "indIEDest": "1",
+    "IE": "123456789012",
+    "email": "cliente@teste.com.br"
+  },
+  "produtos": [
+    {
+      "cProd": "001",
+      "cEAN": "SEM GTIN",
+      "xProd": "PRODUTO TESTE",
+      "NCM": "84713012",
+      "CFOP": "5102",
+      "uCom": "UN",
+      "qCom": 1,
+      "vUnCom": 100,
+      "vProd": 100,
+      "cEANTrib": "SEM GTIN",
+      "uTrib": "UN",
+      "qTrib": 1,
+      "vUnTrib": 100,
+      "indTot": "1",
+      "imposto": {
+        "ICMS": {
+          "orig": "0",
+          "CST": "00",
+          "modBC": "0",
+          "vBC": 100,
+          "pICMS": 18,
+          "vICMS": 18
+        },
+        "PIS": {
+          "CST": "01",
+          "vBC": 100,
+          "pPIS": 1.65,
+          "vPIS": 1.65
+        },
+        "COFINS": {
+          "CST": "01",
+          "vBC": 100,
+          "pCOFINS": 7.6,
+          "vCOFINS": 7.6
+        }
+      }
+    }
+  ],
+  "transporte": {
+    "modFrete": "9"
+  },
+  "pagamentos": [
+    {
+      "indPag": "0",
+      "tPag": "01",
+      "vPag": 100
+    }
+  ],
+  "infCpl": "Nota Fiscal de Teste - Homologacao - Gerada via API NestJS"
+}
+
