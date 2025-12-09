@@ -7,18 +7,31 @@ import {
     Query,
     HttpException, 
     HttpStatus,
-    UploadedFile,
-    UseInterceptors,
   } from '@nestjs/common';
-  import { FileInterceptor } from '@nestjs/platform-express';
   import { NfeTesteService } from './nfe-teste.service';
   import { CriarNfeDto } from './dto/criar-nfe.dto';
-  import { diskStorage } from 'multer';
-  import * as path from 'path';
 
 @Controller('nfe-teste')
 export class NfeTesteController {
     constructor(private readonly nfeService: NfeTesteService) {}
+
+    @Get('debug')
+    async getDebugInfo() {
+        return {
+            platform: process.platform,
+            arch: process.arch,
+            nodeVersion: process.version,
+            env: {
+                LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH,
+                DISPLAY: process.env.DISPLAY,
+                DATABASE_HOST: process.env.DATABASE_HOST,
+            },
+            paths: {
+                cwd: process.cwd(),
+                lib: process.cwd() + '/lib',
+            }
+        };
+    }
 
     @Get('status') 
     async getStatus() {
@@ -33,34 +46,26 @@ export class NfeTesteController {
         }
     }
 
-    @Post('criar')
-    async criarNFe(@Body() dados: CriarNfeDto) {
+
+    @Post('criar-assinar-validar')
+    async criarAssinarValidar(@Body() dados: CriarNfeDto) {
         try {
-            // 1. Cria a NFe a partir do JSON
-            const resultado = await this.nfeService.criarNFeDeJSON(dados);
-            
-            // 2. Obtém o XML gerado pelo ACBr
-            const xml = await this.nfeService.obterXmlGerado();
-            
-            // 3. Extrai a chave de acesso do XML
-            const chaveMatch = xml.match(/Id="NFe(\d{44})"/);
-            const chaveAcesso = chaveMatch ? chaveMatch[1] : null;
+            // Cria, assina, valida e salva no banco
+            const nfe = await this.nfeService.criarAssinarValidarESalvar(dados);
             
             return {
                 success: true,
-                message: 'NFe criada com sucesso (ainda não assinada)',
+                message: 'NFe criada, assinada, validada e salva no banco com sucesso',
                 data: {
-                    chaveAcesso,
-                    serie: dados.serie,
-                    numero: dados.numero,
-                    valor: dados.produtos.reduce((sum, p) => sum + p.vProd, 0),
-                    destinatario: dados.destinatario.xNome,
-                    xmlPath: resultado.xmlPath,
-                    proximosPassos: [
-                        '1. Assinar a NFe: POST /api/nfe-teste/assinar',
-                        '2. Validar a NFe: POST /api/nfe-teste/validar',
-                        '3. Enviar para SEFAZ: POST /api/nfe-teste/enviar'
-                    ]
+                    id: nfe.id,
+                    chaveAcesso: nfe.chave,
+                    serie: nfe.serie,
+                    numero: nfe.numero,
+                    valor: nfe.valor_total,
+                    destinatario: nfe.destinatario_nome,
+                    status: nfe.status,
+                    createdAt: nfe.created_at,
+                    proximoPasso: `Enviar para SEFAZ: POST /api/nfe-teste/envio com body: {"nfeIds": [${nfe.id}], "sincrono": true}`
                 }
             };
         } catch (error) {
@@ -71,13 +76,45 @@ export class NfeTesteController {
         }
     }
 
-    @Get('obter-xml')
-    async obterXml() {
+    @Post('envio')
+    async enviarLote(
+        @Body() body: { 
+            nfeIds: number[];    // IDs das NFes no banco
+            sincrono?: boolean;  // Aguardar resposta da SEFAZ (padrão: true)
+            zipado?: boolean;    // Compactar XMLs (padrão: false)
+        }
+    ) {
         try {
-            const xml = await this.nfeService.obterXmlGerado();
+            if (!body.nfeIds || body.nfeIds.length === 0) {
+                throw new Error('Informe ao menos um ID de NFe para enviar');
+            }
+
+            const resultado = await this.nfeService.enviarLote(
+                body.nfeIds,
+                body.sincrono !== false,
+                body.zipado || false
+            );
+            
+            const retornoEnvio = resultado.resultado.Envio || resultado.resultado;
+            const cStat = retornoEnvio.CStat;
+            const xMotivo = retornoEnvio.XMotivo || retornoEnvio.Msg;
+            const sucesso = cStat === '100' || cStat === '150';
+            
             return {
-                success: true,
-                data: { xml }
+                success: sucesso,
+                message: sucesso 
+                    ? `✅ Lote com ${body.nfeIds.length} NFe(s) autorizado com sucesso!` 
+                    : `❌ Rejeição: ${xMotivo}`,
+                data: {
+                    nfesEnviadas: resultado.nfes,
+                    retornoSefaz: resultado.resultado,
+                    detalhes: {
+                        codigoStatus: cStat,
+                        protocolo: retornoEnvio.NProt,
+                        dataRecebimento: retornoEnvio.DhRecbto,
+                        mensagem: xMotivo
+                    }
+                }
             };
         } catch (error) {
             throw new HttpException(
@@ -87,158 +124,64 @@ export class NfeTesteController {
         }
     }
 
-    @Post('criar-assinar-validar')
-    async criarAssinarValidar(@Body() dados: CriarNfeDto) {
+    @Get('listar')
+    async listarNFes(@Query('limite') limite?: string) {
         try {
-            // 1. Cria a NFe
-            const resultado = await this.nfeService.criarNFeDeJSON(dados);
-            
-            // 2. Assina
-            await this.nfeService.assinar();
-            
-            // 3. Valida
-            await this.nfeService.validar();
-            
-            // 4. Obtém o XML assinado
-            const xml = await this.nfeService.obterXmlGerado();
-            
-            // 5. Extrai a chave de acesso
-            const chaveMatch = xml.match(/Id="NFe(\d{44})"/);
-            const chaveAcesso = chaveMatch ? chaveMatch[1] : null;
+            const lim = limite ? parseInt(limite) : 50;
+            const nfes = await this.nfeService.listarNFes(lim);
             
             return {
                 success: true,
-                message: 'NFe criada, assinada e validada com sucesso',
-                data: {
-                    chaveAcesso,
-                    serie: dados.serie,
-                    numero: dados.numero,
-                    valor: dados.produtos.reduce((sum, p) => sum + p.vProd, 0),
-                    destinatario: dados.destinatario.xNome,
-                    xmlPath: resultado.xmlPath,
-                    status: 'Pronta para envio',
-                    proximoPasso: 'Enviar para SEFAZ: POST /api/nfe-teste/enviar com body: {"lote": 1, "sincrono": true}'
-                }
+                total: nfes.length,
+                data: nfes.map(nfe => ({
+                    id: nfe.id,
+                    chave: nfe.chave,
+                    serie: nfe.serie,
+                    numero: nfe.numero,
+                    emitente: nfe.emitente_nome,
+                    destinatario: nfe.destinatario_nome,
+                    valor: nfe.valor_total,
+                    status: nfe.status,
+                    codigoStatusSefaz: nfe.codigo_status_sefaz,
+                    protocolo: nfe.protocolo,
+                    mensagemSefaz: nfe.mensagem_sefaz,
+                    dataAutorizacao: nfe.data_autorizacao,
+                    criadaEm: nfe.created_at,
+                }))
             };
         } catch (error) {
             throw new HttpException(
                 { success: false, message: error.message },
-                HttpStatus.BAD_REQUEST
+                HttpStatus.INTERNAL_SERVER_ERROR
             );
         }
     }
 
-    @Post('upload-xml')
-    @UseInterceptors(
-        FileInterceptor('file', {
-            storage: diskStorage({
-                destination: path.resolve(process.cwd(), 'data', 'notas'),
-                filename: (req, file, cb) => {
-                    cb(null, `${Date.now()}-${file.originalname}`);
-                }
-            }),
-            fileFilter: (req, file, cb) => {
-                if (file.mimetype === 'text/xml' || file.originalname.endsWith('.xml')) {
-                    cb(null, true);
-                } else {
-                    cb (new Error('Apenas arquivos XML são permitidos'), false);
-                }
-            },
-        }),
-    )
-    async uploadXML(@UploadedFile() file: Express.Multer.File) {
+    @Get(':id')
+    async buscarNFePorId(@Param('id') id: string) {
         try {
-            await this.nfeService.carregarXML(file.path);
-            return {
-                success: true,
-                message: 'XML carregado com sucesso',
-                filename: file.filename
-            };
-        } catch (error) {
-            throw new HttpException(
-                { success: false, message: error.message },
-                HttpStatus.BAD_REQUEST
-            );
-        }
-    }
-
-    @Post('assinar')
-    async assinar() {
-        try {
-            await this.nfeService.assinar();
-            return { success: true, message: 'NFe assinada com sucesso' };
-        } catch (error) {
-            throw new HttpException(
-                { success: false, message: error.message },
-                HttpStatus.INTERNAL_SERVER_ERROR,
-            );
-        }
-    }
-
-    @Post('validar')
-    async validar() {
-        try {
-            await this.nfeService.validar();
-            return { success: true, message: 'NFe validada com sucesso' };
-        } catch (error) {
-            throw new HttpException(
-                { success: false, message: error.message },
-                HttpStatus.BAD_REQUEST,
-            );
-        }
-    }
-
-    @Post('enviar')
-    async enviar(
-        @Body() body: { lote?: number; imprimir?: boolean; sincrono?: boolean; zipado?: boolean },
-    ) {
-        try {
-            const resultado = await this.nfeService.enviar(
-                body.lote,
-                body.imprimir,
-                body.sincrono,
-                body.zipado,
-            );
+            const nfes = await this.nfeService.buscarNFesPorIds([parseInt(id)]);
             
-            // Parsear resultado INI para JSON mais legível
-            const linhas = resultado.split(/\r?\n/);
-            const parsed: any = {};
-            let secaoAtual = 'root';
-            
-            for (const linha of linhas) {
-                const trimmed = linha.trim();
-                if (!trimmed) continue;
-                
-                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-                    secaoAtual = trimmed.slice(1, -1);
-                    parsed[secaoAtual] = {};
-                } else if (trimmed.includes('=')) {
-                    const [key, ...valueParts] = trimmed.split('=');
-                    const value = valueParts.join('=').trim();
-                    if (secaoAtual === 'root') {
-                        parsed[key.trim()] = value || null;
-                    } else {
-                        parsed[secaoAtual][key.trim()] = value || null;
-                    }
-                }
+            if (nfes.length === 0) {
+                throw new HttpException(
+                    { success: false, message: 'NFe não encontrada' },
+                    HttpStatus.NOT_FOUND
+                );
             }
             
-            const cStat = parsed.Envio?.CStat || parsed.CStat;
-            const sucesso = cStat === '100' || cStat === '101' || cStat === '150'; // 100=Autorizada, 101=Cancelada, 150=Autorizada fora de prazo
-            
             return {
-                success: sucesso,
-                message: sucesso ? 'NFe autorizada com sucesso!' : `Rejeição: ${parsed.Envio?.XMotivo || parsed.XMotivo}`,
-                data: parsed,
-                raw: resultado
+                success: true,
+                data: nfes[0]
             };
         } catch (error) {
+            if (error instanceof HttpException) throw error;
             throw new HttpException(
                 { success: false, message: error.message },
-                HttpStatus.INTERNAL_SERVER_ERROR,
+                HttpStatus.INTERNAL_SERVER_ERROR
             );
         }
     }
+
 
     @Get('consultar/:chave')
     async consultar(

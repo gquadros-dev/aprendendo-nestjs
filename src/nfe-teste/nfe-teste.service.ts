@@ -1,9 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, In } from 'typeorm';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { CriarNfeDto } from './dto/criar-nfe.dto';
+import { NotaFiscal, StatusNFe } from './entities/nfe.entity';
 
 const ACBrLibNFeMT = require('@projetoacbr/acbrlib-nfe-node/dist/src').default;
 
@@ -20,17 +23,19 @@ export class NfeTesteService implements OnModuleInit, OnModuleDestroy {
     private readonly pathACBrLib: string;
     private readonly eArqConfig: string;
 
-    constructor(private readonly configService: ConfigService) {
-        const libName = os.platform() === 'win32' ? 'ACBrNFe64.dll' : 'libacbrnfe64.so';
-        this.pathACBrLib = path.resolve(process.cwd(), 'lib', libName);
+    constructor(
+        private readonly configService: ConfigService,
+        @InjectRepository(NotaFiscal)
+        private readonly nfeRepository: Repository<NotaFiscal>,
+    ) {
+        // Windows only - usa ACBrNFe64.dll
+        this.pathACBrLib = path.resolve(process.cwd(), 'lib', 'ACBrNFe64.dll');
         this.eArqConfig = path.resolve(process.cwd(), 'data', 'config', 'acbrlib.ini');
         
-        // Adiciona a pasta lib/ ao PATH para o Windows encontrar as DLLs do OpenSSL
+        // Adiciona a pasta lib/ ao PATH para o Windows encontrar as DLLs
         const libPath = path.resolve(process.cwd(), 'lib');
-        if (os.platform() === 'win32') {
-            process.env.PATH = `${libPath};${process.env.PATH}`;
-            this.logger.debug(`PATH atualizado com: ${libPath}`);
-        }
+        process.env.PATH = `${libPath};${process.env.PATH}`;
+        this.logger.debug(`PATH atualizado com: ${libPath}`);
     }
 
     async onModuleInit() {
@@ -84,9 +89,13 @@ export class NfeTesteService implements OnModuleInit, OnModuleDestroy {
           throw new Error('PFX_PASSWORD não configurado no .env');
         }
     
-        this.acbrNFe.configGravarValor('DFe', 'SSLCryptLib', '1');
-        this.acbrNFe.configGravarValor('DFe', 'SSLHttpLib', '3');
-        this.acbrNFe.configGravarValor('DFe', 'SSLXmlSignLib', '4');
+        // Windows: configurações para DLLs
+        this.acbrNFe.configGravarValor('DFe', 'SSLCryptLib', '1');  // OpenSSL
+        this.acbrNFe.configGravarValor('DFe', 'SSLHttpLib', '3');   // OpenSSL
+        this.acbrNFe.configGravarValor('DFe', 'SSLXmlSignLib', '4'); // XmlSec
+        
+        const libPath = path.resolve(process.cwd(), 'lib');
+        this.acbrNFe.configGravarValor('DFe', 'SSLDLLPath', libPath);
         
         this.acbrNFe.configGravarValor('DFe', 'ArquivoPFX', pfxPath);
         this.acbrNFe.configGravarValor('DFe', 'Senha', senhaPFX);
@@ -743,8 +752,289 @@ export class NfeTesteService implements OnModuleInit, OnModuleDestroy {
         return ini;
     }
 
+    // ========== MÉTODOS DE PERSISTÊNCIA (BANCO DE DADOS) ==========
+
     /**
-    * Cria uma NFe a partir de dados JSON
+    * Salva uma NFe no banco de dados
+    */
+    async salvarNFe(dados: CriarNfeDto, xml: string, chaveAcesso: string, status: StatusNFe): Promise<NotaFiscal> {
+        const nfe = new NotaFiscal();
+        nfe.chave = chaveAcesso;
+        nfe.serie = dados.serie;
+        nfe.numero = dados.numero;
+        nfe.natureza_operacao = dados.naturezaOperacao;
+        nfe.tipo_nf = dados.tpNF;
+        nfe.finalidade = dados.finNFe;
+        nfe.ambiente = dados.tpAmb || '2';
+        nfe.emitente_cnpj = dados.emitente.CNPJ;
+        nfe.emitente_nome = dados.emitente.xNome;
+        nfe.emitente_uf = dados.emitente.endereco.UF;
+        nfe.destinatario_cnpj_cpf = dados.destinatario.CNPJ || dados.destinatario.CPF || '';
+        nfe.destinatario_nome = dados.destinatario.xNome;
+        nfe.valor_produtos = dados.produtos.reduce((sum, p) => sum + p.vProd, 0);
+        nfe.valor_total = dados.produtos.reduce((sum, p) => sum + p.vProd, 0);
+        nfe.valor_icms = dados.produtos.reduce((sum, p) => sum + (p.imposto.ICMS.vICMS || 0), 0);
+        nfe.valor_pis = dados.produtos.reduce((sum, p) => sum + (p.imposto.PIS.vPIS || 0), 0);
+        nfe.valor_cofins = dados.produtos.reduce((sum, p) => sum + (p.imposto.COFINS.vCOFINS || 0), 0);
+        nfe.status = status;
+        nfe.codigo_status_sefaz = 999; // 999 = não enviada ainda
+        nfe.mensagem_sefaz = 'NFe validada, aguardando envio para SEFAZ';
+        nfe.xml_original = xml;
+        if (status === StatusNFe.VALIDADA) {
+            nfe.xml_assinado = xml;
+        }
+        nfe.dados_completos = dados;
+        if (dados.infCpl) {
+            nfe.informacoes_complementares = dados.infCpl;
+        }
+
+        return await this.nfeRepository.save(nfe);
+    }
+
+    /**
+    * Busca NFes por IDs
+    */
+    async buscarNFesPorIds(ids: number[]): Promise<NotaFiscal[]> {
+        return await this.nfeRepository.find({
+            where: { id: In(ids) },
+            order: { id: 'ASC' }
+        });
+    }
+
+    /**
+    * Atualiza status da NFe após envio
+    */
+    async atualizarStatusNFe(
+        id: number, 
+        status: StatusNFe, 
+        protocolo?: string, 
+        mensagem?: string,
+        codigoStatus?: number,
+        dataAutorizacao?: Date
+    ): Promise<void> {
+        const updateData: any = {
+            status,
+            protocolo,
+            mensagem_sefaz: mensagem,
+            codigo_status_sefaz: codigoStatus,
+        };
+        
+        // Usa a data da SEFAZ se fornecida, senão usa data atual
+        if (status === StatusNFe.AUTORIZADA) {
+            updateData.data_autorizacao = dataAutorizacao || new Date();
+        }
+        
+        await this.nfeRepository.update(id, updateData);
+    }
+
+    /**
+    * Lista todas as NFes
+    */
+    async listarNFes(limite: number = 50): Promise<NotaFiscal[]> {
+        return await this.nfeRepository.find({
+            order: { created_at: 'DESC' },
+            take: limite,
+        });
+    }
+
+    /**
+    * Busca NFe por chave de acesso
+    */
+    async buscarNFePorChave(chave: string): Promise<NotaFiscal | null> {
+        return await this.nfeRepository.findOne({ where: { chave } });
+    }
+
+    // ========== MÉTODOS DE CRIAÇÃO E PROCESSAMENTO ==========
+
+    /**
+    * Cria, assina, valida e SALVA NFe no banco
+    */
+    async criarAssinarValidarESalvar(dados: CriarNfeDto): Promise<NotaFiscal> {
+        try {
+            this.logger.log('Criando NFe a partir de JSON...');
+            
+            // Limpa a lista antes de criar nova NFe
+            this.limpar();
+
+            // Converte JSON para XML
+            const xmlContent = this.jsonParaXML(dados);
+            
+            // Extrai chave de acesso
+            const chaveMatch = xmlContent.match(/Id="NFe(\d{44})"/);
+            const chaveAcesso = chaveMatch ? chaveMatch[1] : null;
+            
+            if (!chaveAcesso) {
+                throw new Error('Não foi possível gerar a chave de acesso');
+            }
+            
+            // Salva o XML temporário
+            const xmlPath = path.resolve(process.cwd(), 'data', 'notas', `nfe-${chaveAcesso}.xml`);
+            fs.writeFileSync(xmlPath, xmlContent, 'utf-8');
+            
+            this.logger.log(`XML criado: ${xmlPath}`);
+            
+            // Carrega o XML no ACBr
+            this.acbrNFe.carregarXML(xmlPath);
+            this.logger.log('NFe carregada no ACBr');
+            
+            // Assina
+            this.acbrNFe.assinar();
+            this.logger.log('NFe assinada');
+            
+            // Valida
+            this.acbrNFe.validar();
+            this.logger.log('NFe validada');
+            
+            // Obtém XML assinado
+            const xmlAssinado = this.acbrNFe.obterXml(0);
+            
+            // Salva no banco
+            const nfeSalva = await this.salvarNFe(dados, xmlAssinado, chaveAcesso, StatusNFe.VALIDADA);
+            
+            this.logger.log(`NFe salva no banco com ID: ${nfeSalva.id}`);
+            
+            return nfeSalva;
+        } catch (error) {
+            this.logger.error('Erro ao criar NFe:', error);
+            throw error;
+        }
+    }
+
+    /**
+    * Parseia resposta INI da SEFAZ para objeto
+    */
+    private parsearRespostaSefaz(respostaINI: string): any {
+        const linhas = respostaINI.split(/\r?\n/);
+        const parsed: any = {};
+        let secaoAtual = 'root';
+        
+        for (const linha of linhas) {
+            const trimmed = linha.trim();
+            if (!trimmed) continue;
+            
+            if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                secaoAtual = trimmed.slice(1, -1);
+                parsed[secaoAtual] = {};
+            } else if (trimmed.includes('=')) {
+                const [key, ...valueParts] = trimmed.split('=');
+                const value = valueParts.join('=').trim();
+                if (secaoAtual === 'root') {
+                    parsed[key.trim()] = value || null;
+                } else {
+                    parsed[secaoAtual][key.trim()] = value || null;
+                }
+            }
+        }
+        
+        return parsed;
+    }
+
+    /**
+    * Envia NFes em lote para a SEFAZ
+    */
+    async enviarLote(ids: number[], sincrono: boolean = true, zipado: boolean = false): Promise<any> {
+        try {
+            // Busca NFes do banco
+            const nfes = await this.buscarNFesPorIds(ids);
+            
+            if (nfes.length === 0) {
+                throw new Error('Nenhuma NFe encontrada com os IDs fornecidos');
+            }
+            
+            // Valida se todas estão com status válido para envio
+            const invalidasParaEnvio = nfes.filter(nfe => 
+                nfe.status !== StatusNFe.VALIDADA && nfe.status !== StatusNFe.REJEITADA
+            );
+            
+            if (invalidasParaEnvio.length > 0) {
+                throw new Error(`NFes com status inválido para envio: ${invalidasParaEnvio.map(n => n.id).join(', ')}`);
+            }
+            
+            this.logger.log(`Enviando lote com ${nfes.length} NFe(s)...`);
+            
+            // Limpa lista do ACBr
+            this.limpar();
+            
+            // Carrega todos os XMLs no ACBr
+            for (const nfe of nfes) {
+                const xmlPath = path.resolve(process.cwd(), 'data', 'notas', `nfe-${nfe.chave}.xml`);
+                
+                // Se o arquivo não existir, cria a partir do XML salvo
+                if (!fs.existsSync(xmlPath)) {
+                    fs.writeFileSync(xmlPath, nfe.xml_assinado, 'utf-8');
+                }
+                
+                this.acbrNFe.carregarXML(xmlPath);
+                this.logger.log(`NFe ${nfe.id} carregada no lote`);
+            }
+            
+            // Envia o lote
+            const loteNumero = Date.now() % 999999999;
+            const resultadoRaw = await this.enviar(loteNumero, false, sincrono, zipado);
+            
+            this.logger.log('Lote enviado, processando retorno...');
+            
+            // Parseia resultado
+            const parsed = this.parsearRespostaSefaz(resultadoRaw);
+            const retornoEnvio = parsed.Envio || parsed;
+            
+            const cStat = retornoEnvio.CStat;
+            const xMotivo = retornoEnvio.XMotivo || retornoEnvio.Msg;
+            const nProt = retornoEnvio.NProt;
+            const dhRecbto = retornoEnvio.DhRecbto;
+            
+            // Determina se foi autorizada
+            const codigoAutorizada = ['100', '150']; // 100=Autorizada, 150=Autorizada fora prazo
+            const autorizada = codigoAutorizada.includes(cStat);
+            
+            // Atualiza todas as NFes do lote
+            for (const nfe of nfes) {
+                const novoStatus = autorizada ? StatusNFe.AUTORIZADA : StatusNFe.REJEITADA;
+                const mensagem = autorizada 
+                    ? `Autorizada com sucesso: ${xMotivo}` 
+                    : `Rejeitada pela SEFAZ: ${xMotivo}`;
+                
+                // Parseia data de autorização se vier no formato brasileiro
+                let dataAutorizacao: Date | undefined;
+                if (autorizada && dhRecbto) {
+                    try {
+                        // Formato esperado: "04/12/2025 10:20:40"
+                        const [datePart, timePart] = dhRecbto.split(' ');
+                        const [dia, mes, ano] = datePart.split('/');
+                        dataAutorizacao = new Date(`${ano}-${mes}-${dia}T${timePart}-03:00`);
+                    } catch (e) {
+                        this.logger.warn(`Erro ao parsear data: ${dhRecbto}`);
+                    }
+                }
+                
+                await this.atualizarStatusNFe(
+                    nfe.id,
+                    novoStatus,
+                    nProt || undefined,
+                    mensagem,
+                    parseInt(cStat) || undefined,
+                    dataAutorizacao
+                );
+                
+                this.logger.log(`NFe ${nfe.id} atualizada: ${novoStatus} (CStat: ${cStat})`);
+            }
+            
+            return {
+                nfes: nfes.map(n => ({ id: n.id, chave: n.chave })),
+                resultado: parsed,
+                resultadoRaw
+            };
+        } catch (error) {
+            this.logger.error('Erro ao enviar lote:', error);
+            throw error;
+        }
+    }
+
+    // ========== MÉTODOS LEGADOS (Manter por compatibilidade) ==========
+
+    /**
+    * Cria uma NFe a partir de dados JSON (SEM salvar no banco)
+    * @deprecated Use criarAssinarValidarESalvar()
     * @returns Caminho do arquivo XML gerado
     */
     async criarNFeDeJSON(dados: CriarNfeDto): Promise<{ xmlPath: string }> {
